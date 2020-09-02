@@ -4,12 +4,13 @@ package payment
 import (
 	"encoding/xml"
 	"errors"
+	"fmt"
+	"github.com/beevik/etree"
+	"github.com/medivhzhan/weapp/util"
 	"io/ioutil"
 	"net/http"
 	"strconv"
 	"time"
-
-	"github.com/medivhzhan/weapp/util"
 )
 
 const (
@@ -251,6 +252,8 @@ type PaidNotify struct {
 	OutTradeNo string `xml:"out_trade_no"`
 	// 支付完成时间，格式为yyyyMMddHHmmss，如2009年12月25日9点10分10秒表示为20091225091010
 	Timeend string `xml:"time_end"`
+	// 使用coupon_count的序号生成的优惠券项
+	Coupons []CouponResponseModel `xml:"-"`
 }
 
 type paidNotify struct {
@@ -292,6 +295,19 @@ func HandlePaidNotify(res http.ResponseWriter, req *http.Request, fuck func(Paid
 	if err := xml.Unmarshal(body, &ntf); err != nil {
 		return err
 	}
+	
+	// 解析CouponCount的对应项
+	if ntf.CouponCount > 0 {
+		doc := etree.NewDocument()
+		if err = doc.ReadFromBytes(body); err != nil {
+			return err
+		}
+		root := doc.SelectElement("xml")
+		for i := 0; i < ntf.CouponCount; i++ {
+			m := NewCouponResponseModel(root, "coupon_id_%d", "coupon_fee_%d", i)
+			ntf.Coupons = append(ntf.Coupons, m)
+		}
+	}
 
 	if err := ntf.Check(); err != nil {
 		return err
@@ -308,4 +324,28 @@ func HandlePaidNotify(res http.ResponseWriter, req *http.Request, fuck func(Paid
 	_, err = res.Write(b)
 
 	return err
+}
+
+// 返回结果中的优惠券条目信息
+type CouponResponseModel struct {
+	CouponId string // 代金券或立减优惠ID
+	//CouponType string // CASH-充值代金券 NO_CASH-非充值优惠券 开通免充值券功能，并且订单使用了优惠券后有返回
+	CouponFee int64 // 单个代金券或立减优惠支付金额
+}
+
+// 在XML节点树中，查找labels对应的
+func NewCouponResponseModel(
+	doc *etree.Element,
+	idFormat string,
+//typeFormat string,
+	feeFormat string,
+	numbers ...interface{},
+) (m CouponResponseModel) {
+	idName := fmt.Sprintf(idFormat, numbers...)
+	//typeName := fmt.Sprintf(typeFormat, numbers...)
+	feeName := fmt.Sprintf(feeFormat, numbers...)
+	m.CouponId = doc.SelectElement(idName).Text()
+	//m.CouponType = doc.SelectElement(typeName).Text()
+	m.CouponFee, _ = strconv.ParseInt(doc.SelectElement(feeName).Text(), 10, 64)
+	return
 }
